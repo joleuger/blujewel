@@ -1,0 +1,13 @@
+; SHARED attribute sets wFlags bit 0x40
+; Tests: private vs shared segment flags, segment table parsing
+NAME        SHAREDAPP
+EXETYPE     WINDOWS
+SUBSYSTEM   WINDOWS
+CODE        PRELOAD MOVEABLE DISCARDABLE
+DATA        PRELOAD MOVEABLE MULTIPLE SHARED
+HEAPSIZE    2048
+STACKSIZE   1024
+EXPORTS
+    WinMain @1 NONAME
+    WndProc @2 NONAME
+    InitApp @3 NONAME

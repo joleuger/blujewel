@@ -1,0 +1,13 @@
+; Fixed segments force cReloc = 0
+; Tests: wFlags FIXED bit, empty relocation table, fixed offset handling
+NAME        FIXEDAPP
+EXETYPE     WINDOWS
+SUBSYSTEM   WINDOWS
+CODE        PRELOAD FIXED DISCARDABLE
+DATA        PRELOAD FIXED MULTIPLE
+HEAPSIZE    512
+STACKSIZE   512
+EXPORTS
+    WinMain @1 NONAME
+    WndProc @2 NONAME
+    InitApp @3 NONAME

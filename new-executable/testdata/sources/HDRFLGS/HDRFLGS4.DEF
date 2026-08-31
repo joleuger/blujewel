@@ -1,0 +1,13 @@
+; Larger heap/stack values test dword/word parsing and boundary checks
+; Tests: wHeap, wSS, wSP, segment count, relocation alignment
+NAME        LARGEMEM
+EXETYPE     WINDOWS
+SUBSYSTEM   WINDOWS
+CODE        PRELOAD MOVEABLE DISCARDABLE
+DATA        PRELOAD MOVEABLE MULTIPLE
+HEAPSIZE    4096
+STACKSIZE   2048
+EXPORTS
+    WinMain @1 NONAME
+    WndProc @2 NONAME
+    InitApp @3 NONAME

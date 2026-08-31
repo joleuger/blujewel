@@ -1,0 +1,47 @@
+[package]
+name = "new-executable"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "NE (New Executable) format parser for Windows 16-bit and OS/2"
+repository = "https://github.com/joleuger/blujewel"
+readme = "README.md"
+keywords = ["ne", "executable", "windows", "os2", "parser"]
+categories = ["parser-implementations", "no-std"]
+# Package only the crate itself: no testdata, docs, or reference material.
+include = ["Cargo.toml", "src/**", "tests/**", "/README.md"]
+
+[[bin]]
+name = "ne-inspect"
+path = "src/bin/ne-inspect.rs"
+required-features = ["std"]
+
+[[bin]]
+name = "dump_relocs"
+path = "src/bin/dump_relocs.rs"
+required-features = ["std"]
+
+[dependencies]
+bitflags = "2"
+hex = "0.4"
+
+# Optional: hash/entropy support (same as exe-rs)
+md-5 = { version = "0.9", optional = true }
+sha-1 = { version = "0.9", optional = true }
+sha2 = { version = "0.9", optional = true }
+
+[features]
+default = ["std"]
+std = []
+no_std = []
+# `alloc` enables no_std heap allocation via `extern crate alloc`.
+# (Global-allocator wiring belongs in the embedder's binary, not here.)
+alloc = []
+hash = ["md-5", "sha-1", "sha2"]
+construction = []
+validation = []
+# Tests against the committed, MIT-licensed fixtures in testdata/fixtures/.
+fixtures = []
+# Tests against non-distributable real Windows 3.x / OS/2 binaries that the
+# user must add to testdata/external/ (see TESTS.md, "External test fixtures").
+external-fixtures = []

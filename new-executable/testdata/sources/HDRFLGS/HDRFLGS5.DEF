@@ -1,0 +1,13 @@
+; DISCARDABLE flag affects segment attributes and relocation dependencies
+; Tests: discardable segment offsets, table alignment, flag bit parsing
+NAME        DISCARDABLEAPP
+EXETYPE     WINDOWS
+SUBSYSTEM   WINDOWS
+CODE        PRELOAD MOVEABLE DISCARDABLE
+DATA        PRELOAD MOVEABLE MULTIPLE DISCARDABLE
+HEAPSIZE    1024
+STACKSIZE   1024
+EXPORTS
+    WinMain @1 NONAME
+    WndProc @2 NONAME
+    InitApp @3 NONAME

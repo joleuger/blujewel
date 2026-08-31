@@ -1,0 +1,13 @@
+; Standard Windows 3.1 application layout
+; Tests: wFlags (moveable), cSegment, wHeap, wSS, wSP, cReloc > 0
+NAME        STANDARDWIN
+EXETYPE     WINDOWS
+SUBSYSTEM   WINDOWS
+CODE        PRELOAD MOVEABLE DISCARDABLE
+DATA        PRELOAD MOVEABLE MULTIPLE
+HEAPSIZE    1024
+STACKSIZE   1024
+EXPORTS
+    WinMain @1 NONAME
+    WndProc @2 NONAME
+    InitApp @3 NONAME
