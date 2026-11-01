@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
 // Author: Johannes Leupolz <dev@leupolz.eu>
-// //! NE header structures and constants.
+//! NE header structures and constants.
 //!
 //! All structures are `#[repr(C, packed)]` — they match the on-disk NE format
 //! byte-for-byte. Modifications via `get_mut_ne_header_ref()` are in-place

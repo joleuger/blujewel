@@ -1,0 +1,4 @@
+The open watcom documentation only contains this note here:
+
+Royalty-free 32-bit DOS Extender
+Open Watcom C/C++ includes the DOS/4GW 32-bit DOS extender by Tenberry Software with royalty-free run-time and virtual memory support up to 32MB.

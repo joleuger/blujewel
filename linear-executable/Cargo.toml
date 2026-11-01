@@ -1,0 +1,56 @@
+[package]
+name = "linear-executable"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "LE/LX (Linear Executable) format parser for DOS extender, OS/2, and VxD files"
+readme = "README.md"
+keywords = ["le", "lx", "vxd", "parser"]
+categories = ["parser-implementations", "no-std"]
+# Package only the crate itself: no testdata, docs, or reference material.
+include = ["Cargo.toml", "src/**", "tests/**", "README.md"]
+
+[[bin]]
+name = "le-inspect"
+path = "src/bin/le-inspect.rs"
+required-features = ["std"]
+
+[[bin]]
+name = "le-extract"
+path = "src/bin/le-extract.rs"
+required-features = ["std"]
+
+[[bin]]
+name = "le-disasm"
+path = "src/bin/le-disasm.rs"
+required-features = ["disasm"]
+
+[dependencies]
+bitflags = "2"
+hex = "0.4"
+# Optional: x86 decoding engine, used only by the library's `disasm` facts
+# module (src/disasm.rs). Reachable from no other code, and absent from any
+# build without `--features disasm`. Wired with its `std` feature, so the
+# `disasm` feature below implies `std`.
+iced-x86 = { version = "1.21", optional = true, default-features = false, features = ["std", "decoder", "instr_info", "intel", "gas", "fast_fmt"] }
+
+[features]
+default = ["std"]
+std = []
+no_std = []
+# `alloc` enables no_std heap allocation via `extern crate alloc`.
+# (Global-allocator wiring belongs in the embedder's binary, not here.)
+alloc = []
+# Tests against the committed, user-built Open Watcom LE fixtures in
+# testdata/fixtures/ (see TESTS.md).
+fixtures = []
+# Tests against non-distributable real VxD / W4 archives that the user must
+# add to testdata/external/.
+external-fixtures = []
+# There is deliberately no `w4` feature: the container code including the MRCI
+# ("DS") decompressor of milestone M4 pulls in no optional dependency, so a
+# gate would only add a configuration nobody builds.
+# Disassembler (M5): the `linear_executable::disasm` facts module
+# (src/disasm.rs) and the `le-disasm` CLI. Gates iced-x86; implies std
+# because iced is wired with its `std` feature (see DESIGN.md §8).
+disasm = ["dep:iced-x86", "std"]
