@@ -20,7 +20,6 @@ use std::fs;
 use new_executable::types::{ModuleRefTable, RelocationEntry, RelocationTable};
 use new_executable::{AddressType, Buffer, RelocationType, SegmentRecord, NE};
 
-
 fn addr_name(t: AddressType) -> Cow<'static, str> {
     match t {
         AddressType::LowByte => Cow::Borrowed("byte"),

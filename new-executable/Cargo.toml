@@ -1,6 +1,6 @@
 [package]
 name = "new-executable"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "NE (New Executable) format parser for Windows 16-bit and OS/2"
@@ -21,6 +21,18 @@ name = "dump_relocs"
 path = "src/bin/dump_relocs.rs"
 required-features = ["std"]
 
+# NE code disassembler (ne-disasm). Only built with `--features disasm`.
+[[bin]]
+name = "ne-disasm"
+path = "src/bin/ne-disasm.rs"
+required-features = ["disasm"]
+
+# OMF import-library reader/inspector. Only built with `--features omf`.
+[[bin]]
+name = "omf-inspect"
+path = "src/bin/omf-inspect.rs"
+required-features = ["omf"]
+
 [dependencies]
 bitflags = "2"
 hex = "0.4"
@@ -30,8 +42,13 @@ md-5 = { version = "0.9", optional = true }
 sha-1 = { version = "0.9", optional = true }
 sha2 = { version = "0.9", optional = true }
 
+# Optional: x86-16 decoding engine, used only by the library's `disasm`
+# module (src/disasm.rs). Reachable from no other code; absent from any
+# build without `--features disasm`.
+iced-x86 = { version = "1.21", optional = true, default-features = false, features = ["std", "decoder", "instr_info", "intel", "gas", "fast_fmt"] }
+
 [features]
-default = ["std"]
+default = ["std", "omf"]
 std = []
 no_std = []
 # `alloc` enables no_std heap allocation via `extern crate alloc`.
@@ -45,3 +62,14 @@ fixtures = []
 # Tests against non-distributable real Windows 3.x / OS/2 binaries that the
 # user must add to testdata/external/ (see TESTS.md, "External test fixtures").
 external-fixtures = []
+# Disassembler support: the `new_executable::disasm` facts module (src/disasm.rs) and
+# the `ne-disasm` CLI. Gates iced-x86; implies std (iced is wired with its
+# std feature).
+disasm = ["dep:iced-x86", "std"]
+# OMF import-library support: the `new_executable::omf` module (src/omf.rs), the
+# `omf-inspect` CLI and `ne-inspect --lib` ordinal-name resolution. Part of
+# the default set because that is what an analyst builds; it stays a separate
+# feature (not folded into `std`) so a no_std consumer — an OS or interpreter
+# that only *loads* NE files — drops it, since OMF libraries are link-time
+# analysis data a loader never needs. Requires std.
+omf = ["std"]

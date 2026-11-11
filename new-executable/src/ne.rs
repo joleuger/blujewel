@@ -96,9 +96,31 @@ pub trait NE: Buffer {
     ///
     /// The returned reference is valid as long as the underlying buffer
     /// does not change. This enables in-place modification via `get_mut_ne_header_ref()`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let Some(bytes) = ne::doc_fixture() else { return };
+    /// use ne::{VecNE, NE};
+    /// let ne = VecNE::from_memory(bytes);
+    /// let header = ne.get_ne_header_ref().unwrap(); // points into `ne`, copies nothing
+    /// assert!(header.is_v5()); // linker 5.60 → v5 (there is no version bit)
+    /// assert_eq!(header.common_fields().flags, 0x0302);
+    /// ```
     fn get_ne_header_ref(&self) -> Result<&ImageOS2Header, Error>;
 
     /// Get the NE header as a mutable reference (zero-copy, in-place modification).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let Some(bytes) = ne::doc_fixture() else { return };
+    /// use ne::{VecNE, NE};
+    /// let mut ne = VecNE::from_memory(bytes);
+    /// ne.get_mut_ne_header_ref().unwrap().expected_version = 0x0301;
+    /// let header = ne.get_valid_ne_header().unwrap(); // the edit is on "disk"
+    /// assert_eq!(header.v5_fields().unwrap().expected_version, 0x0301);
+    /// ```
     fn get_mut_ne_header_ref(&mut self) -> Result<&mut ImageOS2Header, Error>;
 
     /// Get the NE header and validate it.
@@ -111,6 +133,25 @@ pub trait NE: Buffer {
     ///
     /// NOTE: `e_lfarlc` is intentionally NOT validated — valid NE files
     /// may hold any value there (e.g. 0).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let Some(bytes) = ne::doc_fixture() else { return };
+    /// use ne::{VecNE, NE};
+    /// let ne = VecNE::from_memory(bytes);
+    /// let header = ne.get_valid_ne_header().unwrap();
+    /// // `common_fields()` hands back a plain (non-packed) copy of the fields:
+    /// assert_eq!(header.common_fields().seg_count, 2); // DUALBTN: code + data
+    /// ```
+    ///
+    /// Anything that is not an NE file is rejected before a table is touched:
+    ///
+    /// ```
+    /// use ne::{VecNE, NE};
+    /// let ne = VecNE::from_slice(b"not an NE file");
+    /// assert!(ne.get_valid_ne_header().is_err());
+    /// ```
     fn get_valid_ne_header(&self) -> Result<ImageOS2Header, Error>;
 
     /// Validate that the DOS header is large enough to read its fields.
@@ -128,6 +169,15 @@ pub trait NE: Buffer {
     /// Per osdev.org and Windows 3.00 Developer's Notes, the library flag is bit 15
     /// (0x8000) in the NE header flags. This is the only difference between an
     /// EXE program and a DLL library.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let Some(bytes) = ne::doc_fixture() else { return };
+    /// use ne::{VecNE, NE};
+    /// let ne = VecNE::from_memory(bytes);
+    /// assert!(!ne.is_library()); // DUALBTN.bin is an application, not a DLL
+    /// ```
     fn is_library(&self) -> bool;
 
     /// Get the expected processor modes supported by this module.
@@ -142,6 +192,27 @@ pub trait NE: Buffer {
     fn supported_processor_modes(&self) -> (bool, bool);
 
     /// Get the segment table (all segment records).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let Some(bytes) = ne::doc_fixture() else { return };
+    /// use ne::{VecNE, NE};
+    /// let ne = VecNE::from_memory(bytes);
+    /// let header = ne.get_valid_ne_header().unwrap();
+    /// let segments = ne.get_segment_table().unwrap();
+    /// assert_eq!(segments.len(), 2);
+    ///
+    /// // `SegmentRecord::offset` is a *sector* value: the file offset of the
+    /// // segment's data is `offset << alignment_shift` — a file-absolute
+    /// // offset, with no `e_lfanew` involved (that is only for header table
+    /// // RVAs, the other offset system).
+    /// let shift = header.alignment as usize;
+    /// let seg1_file = (segments[0].offset as usize) << shift;
+    /// assert_eq!(seg1_file, 0x140); // DUALBTN.bin segment 1 starts at 0x140
+    /// // `usize::from`: records are `repr(packed)`, `assert_eq!` must not reference a field
+    /// assert_eq!(usize::from(segments[0].length), 0x9CA);
+    /// ```
     fn get_segment_table(&self) -> Result<Vec<SegmentRecord>, Error>;
 
     /// Get a segment record by its 1-based segment number.
@@ -162,11 +233,32 @@ pub trait NE: Buffer {
     /// # Arguments
     /// * `seg_num` — 1-based segment number
     /// * `offset` — offset within the segment
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let Some(bytes) = ne::doc_fixture() else { return };
+    /// use ne::{VecNE, NE};
+    /// let ne = VecNE::from_memory(bytes);
+    /// // The entry point CS:IP is segment 1, offset 0x1A (DUALBTN.bin):
+    /// assert_eq!(ne.logical_to_offset(1, 0x1A).unwrap(), 0x15A);
+    /// ```
     fn logical_to_offset(&self, seg_num: u16, offset: u16) -> Result<usize, Error>;
 
     /// Get the data of a specific segment.
     ///
     /// Returns the segment's data as a byte slice.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let Some(bytes) = ne::doc_fixture() else { return };
+    /// use ne::{VecNE, NE};
+    /// let ne = VecNE::from_memory(bytes);
+    /// let seg1 = ne.get_segment_data(1).unwrap();
+    /// // Segment-relative addressing: the entry at 0x1A starts `xor bp,bp`
+    /// assert_eq!(&seg1[0x1A..0x1C], &[0x33, 0xED]);
+    /// ```
     fn get_segment_data(&self, seg_num: u16) -> Result<&[u8], Error>;
 
     /// Get the number of segments.
@@ -247,6 +339,19 @@ pub struct VecNE {
 
 impl VecNE {
     /// Create a `VecNE` from a file path.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[cfg(feature = "std")]
+    /// # fn main() -> Result<(), ne::Error> {
+    /// use ne::VecNE;
+    /// let ne = VecNE::from_disk_file("app.exe")?;
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "std"))]
+    /// # fn main() {}
+    /// ```
     #[cfg(feature = "std")]
     pub fn from_disk_file(path: &str) -> Result<Self, Error> {
         #[cfg(feature = "std")]
@@ -258,12 +363,30 @@ impl VecNE {
     }
 
     /// Create a `VecNE` from in-memory data.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let Some(bytes) = ne::doc_fixture() else { return };
+    /// use ne::{VecNE, NE};
+    /// let ne = VecNE::from_memory(bytes); // ownership moves in; parsing stays zero-copy
+    /// assert!(ne.get_valid_ne_header().is_ok());
+    /// ```
     #[must_use]
     pub fn from_memory(data: Vec<u8>) -> Self {
         Self { data }
     }
 
     /// Create a `VecNE` from a byte slice (copies the data).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ne::{Buffer, VecNE};
+    /// let source = [0u8; 256];
+    /// let ne = VecNE::from_slice(&source);
+    /// assert_eq!(ne.len(), 256); // `len` comes from the `Buffer` trait
+    /// ```
     #[must_use]
     pub fn from_slice(data: &[u8]) -> Self {
         Self {
@@ -815,7 +938,7 @@ impl NE for PtrNE<'_> {
 
     fn is_library(&self) -> bool {
         // Library (DLL) flag is bit 15 (0x8000) of the header flags
-        // (NeFlags::LIBRARY).
+        // (NeFlags::LIBRARY per the Windows 3.1 spec).
         match self.get_ne_header() {
             Ok(header) => NeFlags::from_bits_truncate(header.flags).contains(NeFlags::LIBRARY),
             Err(_) => false,

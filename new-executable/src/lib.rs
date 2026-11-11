@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
 // Author: Johannes Leupolz <dev@leupolz.eu>
-//! # ne — NE (New Executable) Format Parser
+//! # new-executable — NE (New Executable) Format Parser
 //!
 //! A Rust library for parsing NE (New Executable) format files used by
 //! Windows 16-bit and OS/2 16-bit.
@@ -18,13 +18,20 @@
 //!
 //! ## Quick Start
 //!
-//! ```ignore
+//! ```
+//! // The examples in these docs run against the shipped golden fixture,
+//! // DUALBTN.bin, when it is available (`fixtures` feature) and skip
+//! // gracefully when it is not — see [`doc_fixture`].
+//! # let Some(bytes) = ne::doc_fixture() else { return };
 //! use ne::{VecNE, NE};
 //!
+//! let ne = VecNE::from_memory(bytes);
 //! let header = ne.get_valid_ne_header().unwrap();
+//! assert_eq!(header.version(), "NE v5 (Windows 3.1)");
 //!
-//! // Parse tables on demand
+//! // Tables are parsed on demand
 //! let segments = ne.get_segment_table().unwrap();
+//! assert_eq!(segments.len(), 2);
 //! let entry_table = ne::types::EntryTable::parse(&ne).unwrap();
 //! ```
 //!
@@ -85,6 +92,17 @@ pub use std::vec::Vec;
 pub mod headers;
 pub mod ne;
 pub mod types;
+
+// Disassembly facts layer (see DISASM_PLAN.md). Gated so a build without
+// `disasm` contains neither this module nor iced-x86. Not re-exported at
+// the crate root: its names (`Syntax`, `Listing`, …) stay module-scoped.
+#[cfg(feature = "disasm")]
+pub mod disasm;
+
+// OMF import-library reader (see OMF.md). Gated because it is analysis-side
+// data: a loader needs none of it. Not re-exported at the crate root either.
+#[cfg(feature = "omf")]
+pub mod omf;
 
 #[cfg(test)]
 mod tests;
@@ -323,6 +341,82 @@ pub fn align(value: usize, boundary: usize) -> usize {
 }
 
 // ---------------------------------------------------------------------------
+// Fixture helper for doc examples
+// ---------------------------------------------------------------------------
+
+/// Bytes of the golden fixture `testdata/fixtures/DUALBTN.bin`, or `None`
+/// when it is not available in this build/checkout.
+///
+/// Every example in these docs that wants a *real* NE file uses this guard:
+///
+/// ```text
+/// # let Some(bytes) = ne::doc_fixture() else { return };
+/// ```
+///
+/// # Why does this exist?
+///
+/// The examples are more useful when they assert against a genuine NE file
+/// (DUALBTN.bin, fully annotated in `example.md`) instead of hand-tuned
+/// synthetic bytes. The fixture ships with the source repository, but it is
+/// deliberately **excluded from the published crate** (`include` in
+/// `Cargo.toml`): uploading raw 16-bit `.exe` blobs to a package registry
+/// trips antivirus scanners on download, so the published crate carries no
+/// binary test data at all. That safety property and always-runnable
+/// examples cannot both have the published crate — so the examples deal in
+/// facts on the real file *when present* and skip cleanly when not. This
+/// function is the single switch that encodes that trade-off.
+///
+/// # Why is it public?
+///
+/// Doc examples compile as separate crates that link only the *public* API,
+/// so the helper cannot be private. It is **not** part of the NE-parsing
+/// API — application code should never call it.
+///
+/// # When does it return `Some`?
+///
+/// Only when all of: the `std` and `fixtures` features are enabled (the
+/// standard repo verification run `cargo test --features fixtures`), and the
+/// file is readable from the crate checkout. Published-crate builds never
+/// satisfy this, so examples skip there — never fail.
+#[must_use]
+pub fn doc_fixture() -> Option<Vec<u8>> {
+    fixture_impl()
+}
+
+#[cfg(all(feature = "std", feature = "fixtures"))]
+fn fixture_impl() -> Option<Vec<u8>> {
+    // Same location the `fixtures` test suite uses: `cargo test` runs with
+    // the crate root as working directory. Missing file → None, not panic.
+    std::fs::read("testdata/fixtures/DUALBTN.bin").ok()
+}
+
+#[cfg(not(all(feature = "std", feature = "fixtures")))]
+fn fixture_impl() -> Option<Vec<u8>> {
+    None
+}
+
+/// Bytes of the OMF fixture `testdata/fixtures/SIMPLIB_LIB.BIN`, or `None`
+/// when it is not available in this build/checkout.
+///
+/// Same contract and same reasoning as [`doc_fixture`]: used by the
+/// `ne::omf` doc examples, present only in a repo checkout with `std` +
+/// `fixtures`, never in the published crate.
+#[must_use]
+pub fn doc_omf_library() -> Option<Vec<u8>> {
+    omf_fixture_impl()
+}
+
+#[cfg(all(feature = "std", feature = "fixtures"))]
+fn omf_fixture_impl() -> Option<Vec<u8>> {
+    std::fs::read("testdata/fixtures/SIMPLIB_LIB.BIN").ok()
+}
+
+#[cfg(not(all(feature = "std", feature = "fixtures")))]
+fn omf_fixture_impl() -> Option<Vec<u8>> {
+    None
+}
+
+// ---------------------------------------------------------------------------
 // Hash utilities (optional, gated by `hash` feature)
 // ---------------------------------------------------------------------------
 
@@ -341,6 +435,14 @@ pub mod hash {
     use sha2::{Digest, Sha256};
 
     /// Hash data using MD5
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let digest = ne::hash::md5(b"NE"); // the NE signature bytes
+    /// let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    /// assert_eq!(hex, "dc33066c3993e0d50896e533fd692ce0");
+    /// ```
     #[must_use]
     pub fn md5(data: &[u8]) -> [u8; 16] {
         Md5::digest(data).into()

@@ -58,6 +58,18 @@ impl<'a> PascalString<'a> {
     }
 
     /// Convert to a UTF-8 string (returns Error if not valid UTF-8).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ne::PascalString;
+    /// let name = PascalString { data: b"DUALBTN" };
+    /// assert_eq!(name.as_str().unwrap(), "DUALBTN");
+    ///
+    /// // NE Pascal strings are raw bytes, not guaranteed UTF-8:
+    /// let raw = PascalString { data: &[0xFF] };
+    /// assert!(raw.as_str().is_err());
+    /// ```
     pub fn as_str(&self) -> Result<&'a str, Error> {
         core::str::from_utf8(self.data).map_err(|_| Error::InvalidPascalString)
     }
@@ -94,6 +106,18 @@ impl<'a> ResidentNameTable<'a> {
     /// ASCII bytes) followed by 2-byte ordinal suffixes. Each name-ordinal pair
     /// is: `[len][name_bytes...][ordinal_lo][ordinal_hi]`. The table ends at a
     /// zero length byte. The first entry is the module name itself.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let Some(bytes) = ne::doc_fixture() else { return };
+    /// use ne::{ResidentNameTable, VecNE};
+    /// let ne = VecNE::from_memory(bytes);
+    /// let rnt = ResidentNameTable::parse(&ne).unwrap();
+    /// assert_eq!(rnt.entries[0].name.as_str().unwrap(), "DUALBTN");
+    /// assert_eq!(rnt.entries[0].ordinal, 0); // the module name has ordinal 0
+    /// assert!(rnt.by_name("dualbtn").is_some()); // ASCII, case-insensitive
+    /// ```
     pub fn parse<P: NE>(ne: &'a P) -> Result<Self, Error> {
         let offset = ne.resident_name_table_offset() as usize;
         if offset == 0 {
@@ -166,6 +190,16 @@ impl<'a> NonResidentNameTable<'a> {
     /// Parse the non-resident names table from an NE buffer.
     ///
     /// An absent table (size or offset zero) yields an empty result.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let Some(bytes) = ne::doc_fixture() else { return };
+    /// use ne::{NonResidentNameTable, VecNE};
+    /// let ne = VecNE::from_memory(bytes);
+    /// let nnt = NonResidentNameTable::parse(&ne).unwrap();
+    /// assert_eq!(nnt.entries[0].name.as_str().unwrap(), "DUALBTN.exe");
+    /// ```
     pub fn parse<P: NE>(ne: &'a P) -> Result<Self, Error> {
         let header = ne.get_valid_ne_header()?;
         let fields = header.common_fields();
@@ -224,6 +258,19 @@ impl ModuleRefTable {
     ///
     /// The module reference table starts at `ne_modtab` and contains
     /// `ne_cmod` WORDs (where `ne_cmod` is the module count from the header).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let Some(bytes) = ne::doc_fixture() else { return };
+    /// use ne::{ModuleRefTable, VecNE};
+    /// let ne = VecNE::from_memory(bytes);
+    /// let mrt = ModuleRefTable::parse(&ne).unwrap();
+    /// assert_eq!(mrt.count, 2);
+    /// // `get_name` resolves each entry against the imported names table:
+    /// assert_eq!(mrt.get_name(&ne, 0).unwrap().as_str().unwrap(), "USER");
+    /// assert_eq!(mrt.get_name(&ne, 1).unwrap().as_str().unwrap(), "KERNEL");
+    /// ```
     pub fn parse<P: NE>(ne: &P) -> Result<Self, Error> {
         let offset = ne.module_ref_table_offset();
         if offset == 0 {
@@ -344,6 +391,17 @@ impl<'a> ImportedNamesTable<'a> {
     /// The table extent runs to the entry table (which immediately follows
     /// the ITL in the reference layout) or to the end of the buffer when the
     /// entry table is absent or precedes the ITL.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let Some(bytes) = ne::doc_fixture() else { return };
+    /// use ne::{ImportedNamesTable, VecNE};
+    /// let ne = VecNE::from_memory(bytes);
+    /// let itl = ImportedNamesTable::parse(&ne).unwrap();
+    /// // The leading empty string is the ordinal-0 placeholder, not an error:
+    /// assert_eq!(itl.names_str().unwrap(), ["", "USER", "KERNEL"]);
+    /// ```
     pub fn parse<P: NE>(ne: &'a P) -> Result<Self, Error> {
         let offset = ne.imported_names_table_offset();
         if offset == 0 {
@@ -392,7 +450,11 @@ impl<'a> ImportedNamesTable<'a> {
 ///   the record carries 3 bytes per entry (`flags` + `offset`).
 /// - `Constant` — type 0xFE; 3 bytes per entry (`flags` + `value`).
 /// - `Movable` — type 0xFF; 6 bytes per entry
-///   (`flags` + `x` + `x` + `seg` + `offset`).
+///   (`flags` + 2-byte `int 3Fh` stub + `seg` (u8) + `offset` (u16)).
+///
+/// The two stub bytes of a movable record are `CD 3F` in every file
+/// examined: the int 3fh is called if the export is called before
+/// the loader has relocated it. They are not a length or offset field.
 ///
 /// (Type 0x00 marks *unused* ordinals — no data bytes — and is represented
 /// by a `None` slot in [`EntryTable::entries`], not by an entry.)
@@ -410,13 +472,38 @@ pub enum EntryType {
 /// A single exported entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportEntry {
-    /// Flags byte (bit 7 = private).
+    /// Entry flags byte (see [`ExportEntry::is_exported`],
+    /// [`ExportEntry::uses_shared_data_segment`] and
+    /// [`ExportEntry::transition_stack_words`]).
     pub flags: u8,
     /// Kind of entry, with its payload.
     pub entry_type: EntryType,
 }
 
 impl ExportEntry {
+    /// Bit 0: the entry is **exported**, i.e. callable from outside the
+    /// module. Clear means an internal entry point: it occupies an ordinal
+    /// slot and has a real address, but other modules may not import it.
+    #[must_use]
+    pub fn is_exported(&self) -> bool {
+        self.flags & 0x01 != 0
+    }
+
+    /// Bit 1: the entry uses the global (shared) data segment. Only settable
+    /// for SINGLEDATA library modules, which is why applications
+    /// read 0x01 while the 16-bit DLLs read mostly 0x03.
+    #[must_use]
+    pub fn uses_shared_data_segment(&self) -> bool {
+        self.flags & 0x02 != 0
+    }
+
+    /// Bits 3-7: for modules with ring-transition code, the number of stack
+    /// words copied between rings. Bit 2 is unspecified AFAIK.
+    #[must_use]
+    pub fn transition_stack_words(&self) -> u8 {
+        self.flags >> 3
+    }
+
     /// The 1-based segment number (Fixed and Movable entries).
     #[must_use]
     pub fn seg_num(&self) -> Option<u8> {
@@ -471,6 +558,20 @@ impl EntryTable {
     ///
     /// Returns [`Error::TableNotPresent`] if the header does not reference
     /// an entry table.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let Some(bytes) = ne::doc_fixture() else { return };
+    /// use ne::{EntryTable, VecNE};
+    /// let ne = VecNE::from_memory(bytes);
+    /// let table = EntryTable::parse(&ne).unwrap();
+    /// // DUALBTN.bin's entry table is the single byte 0x00: a bundle count
+    /// // of zero, i.e. the program exports nothing (typical for 16-bit apps;
+    /// // DLLs like USER.EXE carry hundreds of ordinals).
+    /// assert_eq!(table.total_slot_count(), 0);
+    /// assert_eq!(table.export_count(), 0);
+    /// ```
     pub fn parse<P: NE>(ne: &P) -> Result<Self, Error> {
         let start = ne.entry_table_offset() as usize;
         if start == 0 {
@@ -580,6 +681,32 @@ impl EntryTable {
     #[must_use]
     pub fn export_count(&self) -> usize {
         self.entries.iter().filter(|e| e.is_some()).count()
+    }
+
+    /// Get the total number of ordinal slots in the table (used + unused).
+    ///
+    /// Unused slots are ordinals present in the table with no export
+    /// (type-0 bundle entries).
+    #[must_use]
+    pub fn total_slot_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Get the number of unused ordinal slots (present in the table but
+    /// with no export). Always `total_slot_count() - export_count()`.
+    #[must_use]
+    pub fn unused_count(&self) -> usize {
+        self.entries.iter().filter(|e| e.is_none()).count()
+    }
+
+    /// Number of movable (type 0xFF) records. Cross-checks the header's
+    /// `movable_entry_count` field (SDK `ne_cmovent`).
+    #[must_use]
+    pub fn movable_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| matches!(e, Some(en) if matches!(en.entry_type, EntryType::Movable { .. })))
+            .count()
     }
 }
 
@@ -945,6 +1072,24 @@ impl RelocationEntry {
     ///
     /// The chain starts at [`Self::offset`]; at each link the 16-bit value
     /// stored there is the *next* link, and `0xFFFF` terminates the chain.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let Some(bytes) = ne::doc_fixture() else { return };
+    /// # use ne::{RelocationTable, VecNE, NE};
+    /// let ne = VecNE::from_memory(bytes);
+    /// let relocs = RelocationTable::parse(&ne).unwrap();
+    /// let seg1 = ne.get_segment_data(1).unwrap();
+    /// let entry = relocs
+    ///     .entries
+    ///     .iter()
+    ///     .find(|e| e.segment_number == 1 && e.offset == 0x778)
+    ///     .unwrap();
+    /// let links = entry.resolve_chain(seg1).unwrap();
+    /// assert_eq!(links[0], 0x778); // chain head = the entry's own offset
+    /// assert_eq!(links.len(), 14); // one relocation patches 14 sites
+    /// ```
     pub fn resolve_chain(&self, segment_data: &[u8]) -> Result<Vec<u16>, Error> {
         let mut links: Vec<u16> = Vec::new();
         let mut pos = self.offset;
@@ -989,6 +1134,17 @@ impl<'a> RelocationTable {
     /// starts at `(seg_data_offset << alignment) + seg_data_length` (the
     /// segment record's offset is a sector offset, not an RVA). The block
     /// begins with a u16 entry count followed by 8-byte entries.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let Some(bytes) = ne::doc_fixture() else { return };
+    /// use ne::{RelocationTable, VecNE};
+    /// let ne = VecNE::from_memory(bytes);
+    /// let relocs = RelocationTable::parse(&ne).unwrap();
+    /// // DUALBTN.bin: 29 loader fixups across its two segments
+    /// assert_eq!(relocs.entries.len(), 29);
+    /// ```
     pub fn parse<P: NE>(ne: &'a P) -> Result<Self, Error> {
         let header = ne.get_valid_ne_header()?;
         let segments = ne.get_segment_table()?;

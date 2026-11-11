@@ -88,7 +88,7 @@ mod tests {
         data[off + 0x2A..off + 0x2C].copy_from_slice(&0u16.to_le_bytes());
         // non_res_name_table_offset: 0x2C (4 bytes)
         data[off + 0x2C..off + 0x30].copy_from_slice(&(0u32).to_le_bytes());
-        // mod_internal_entries: 0x30 (2 bytes)
+        // movable_entry_count: 0x30 (2 bytes)
         data[off + 0x30..off + 0x32].copy_from_slice(&0u16.to_le_bytes());
         // alignment:       0x32 (2 bytes)
         data[off + 0x32..off + 0x34].copy_from_slice(&0u16.to_le_bytes());
@@ -431,7 +431,7 @@ mod tests {
         assert_eq!(f.mod_table_offset, 0x5B);
         assert_eq!(f.imported_names_table_offset, 0x5F);
         assert_eq!(f.non_res_name_table_offset, 0xED);
-        assert_eq!(f.mod_internal_entries, 0);
+        assert_eq!(f.movable_entry_count, 0);
         assert_eq!(f.alignment, 4);
         assert_eq!(f.resource_count, 0);
         assert_eq!(f.exe_type, 2);
@@ -1100,7 +1100,9 @@ mod tests {
         assert_eq!(itl.names_str().unwrap(), vec!["", "KERNEL"]);
         let et = EntryTable::parse(&ne).unwrap();
         assert_eq!(et.entries.len(), 825);
-        assert_eq!(export_count(&et), 363);
+        assert_eq!(et.export_count(), 363);
+        assert_eq!(et.unused_count(), 462);
+        assert_eq!(et.total_slot_count(), 825);
         let rnt = ResidentNameTable::parse(&ne).unwrap();
         assert_eq!(rnt.entries.len(), 3);
         assert_eq!(rnt.entries[0].name.as_str().unwrap(), "GDI");
@@ -1125,8 +1127,13 @@ mod tests {
             vec!["", "GDI", "KERNEL", "SYSTEM", "KEYBOARD", "MOUSE", "COMM", "DDEML"]
         );
         let et = EntryTable::parse(&ne).unwrap();
+        // 891 ordinal slots, only 520 used (371 unused) — the type-0
+        // "unused ordinal" bundles make up the gap. total_slot_count is
+        // the authoritative on-disk slot count, not export_count.
         assert_eq!(et.entries.len(), 891);
-        assert_eq!(export_count(&et), 520);
+        assert_eq!(et.export_count(), 520);
+        assert_eq!(et.unused_count(), 371);
+        assert_eq!(et.total_slot_count(), 891);
         let rnt = ResidentNameTable::parse(&ne).unwrap();
         assert_eq!(rnt.entries.len(), 4);
         assert_eq!(rnt.entries[0].name.as_str().unwrap(), "USER");
@@ -1179,7 +1186,9 @@ mod tests {
         assert!(mrt.offsets.is_empty());
         let et = EntryTable::parse(&ne).unwrap();
         assert_eq!(et.entries.len(), 864);
-        assert_eq!(export_count(&et), 449);
+        assert_eq!(et.export_count(), 449);
+        assert_eq!(et.unused_count(), 415);
+        assert_eq!(et.total_slot_count(), 864);
         let rnt = ResidentNameTable::parse(&ne).unwrap();
         assert_eq!(rnt.entries.len(), 2);
         assert_eq!(rnt.entries[0].name.as_str().unwrap(), "KERNEL");
@@ -1250,7 +1259,7 @@ mod tests {
             0x2A
         );
         assert_eq!(offset_of!(ImageOS2Header, non_res_name_table_offset), 0x2C);
-        assert_eq!(offset_of!(ImageOS2Header, mod_internal_entries), 0x30);
+        assert_eq!(offset_of!(ImageOS2Header, movable_entry_count), 0x30);
         assert_eq!(offset_of!(ImageOS2Header, alignment), 0x32);
         assert_eq!(offset_of!(ImageOS2Header, resource_count), 0x34);
         assert_eq!(offset_of!(ImageOS2Header, exe_type), 0x36);
@@ -1598,6 +1607,55 @@ mod tests {
         // Entry table offset is 0 in our synthetic file → TableNotPresent
         let result = EntryTable::parse(&ne);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_entry_table_slot_counts() {
+        // Mixed used/unused slots, as produced by a type-0 bundle between
+        // other bundles: ordinals 1, 3, 4 used; ordinal 2 unused.
+        let table = EntryTable {
+            entries: vec![
+                Some(ExportEntry {
+                    flags: 0,
+                    entry_type: EntryType::Fixed {
+                        seg_num: 1,
+                        offset: 0x10,
+                    },
+                }),
+                None,
+                Some(ExportEntry {
+                    flags: 0,
+                    entry_type: EntryType::Constant { value: 0x0042 },
+                }),
+                Some(ExportEntry {
+                    flags: 0,
+                    entry_type: EntryType::Movable {
+                        seg_num: 2,
+                        offset: 0x20,
+                    },
+                }),
+            ],
+        };
+        assert_eq!(table.total_slot_count(), 4);
+        assert_eq!(table.export_count(), 3);
+        assert_eq!(table.unused_count(), 1);
+
+        // All-used table: no unused slots.
+        let used = EntryTable {
+            entries: vec![Some(ExportEntry {
+                flags: 0,
+                entry_type: EntryType::Constant { value: 1 },
+            })],
+        };
+        assert_eq!(used.total_slot_count(), 1);
+        assert_eq!(used.export_count(), 1);
+        assert_eq!(used.unused_count(), 0);
+
+        // Empty table (e.g. a 1-byte `00` terminator): all zero.
+        let empty = EntryTable::default();
+        assert_eq!(empty.total_slot_count(), 0);
+        assert_eq!(empty.export_count(), 0);
+        assert_eq!(empty.unused_count(), 0);
     }
 
     // -----------------------------------------------------------------------

@@ -391,6 +391,17 @@ impl ImageOS2Header {
     /// Detection is based on the linker version: major >= 5 means v5.
     /// There is no version flag bit — the flags bit 0 (0x0001) is
     /// SINGLEDATA and must not be used here.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let Some(bytes) = ne::doc_fixture() else { return };
+    /// # use ne::{VecNE, NE};
+    /// let ne = VecNE::from_memory(bytes);
+    /// let header = ne.get_ne_header_ref().unwrap();
+    /// assert!(header.is_v5()); // DUALBTN.bin links at 5.60
+    /// assert_eq!(header.header_size(), ne::NE_HEADER_SIZE_V5);
+    /// ```
     #[must_use]
     pub fn is_v5(&self) -> bool {
         self.linker_version >= 5
@@ -403,6 +414,16 @@ impl ImageOS2Header {
     }
 
     /// Get the version as a string.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let Some(bytes) = ne::doc_fixture() else { return };
+    /// # use ne::{VecNE, NE};
+    /// let ne = VecNE::from_memory(bytes);
+    /// let header = ne.get_valid_ne_header().unwrap();
+    /// assert_eq!(header.version(), "NE v5 (Windows 3.1)");
+    /// ```
     #[must_use]
     pub fn version(&self) -> &'static str {
         if self.is_v5() {
@@ -461,7 +482,7 @@ impl ImageOS2Header {
             mod_table_offset: self.mod_table_offset,
             imported_names_table_offset: self.imported_names_table_offset,
             non_res_name_table_offset: self.non_res_name_table_offset,
-            mod_internal_entries: self.mod_internal_entries,
+            movable_entry_count: self.movable_entry_count,
             alignment: self.alignment,
             resource_count: self.resource_count,
             exe_type: self.exe_type,
@@ -503,7 +524,7 @@ pub struct CommonFields {
     pub mod_table_offset: u16,
     pub imported_names_table_offset: u16,
     pub non_res_name_table_offset: u32,
-    pub mod_internal_entries: u16,
+    pub movable_entry_count: u16,
     pub alignment: u16,
     pub resource_count: u16,
     pub exe_type: u8,

@@ -5,13 +5,13 @@
 //!
 //! See USAGE.md for full documentation.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::process;
 
-use new_executable::headers::*;
-use new_executable::types::*;
-use new_executable::{Buffer, VecNE, NE};
+use ne::headers::*;
+use ne::types::*;
+use ne::{Buffer, VecNE, NE};
 
 #[rustfmt::skip]
 const OUTPUT_FORMATS: &[(&str, &str)] = &[
@@ -30,12 +30,14 @@ fn main() {
         eprintln!(
             "  --format <FORMAT>   Output format: detailed, json, winedump (default: detailed)"
         );
+        eprintln!("  --lib <PATH>        OMF import library for ordinal names (repeatable)");
         process::exit(3);
     }
 
     // Parse options
     let mut file_idx = None;
     let mut format: Option<&str> = None;
+    let mut lib_paths: Vec<String> = Vec::new();
     let mut list_formats = false;
     let mut show_version = false;
 
@@ -49,6 +51,14 @@ fn main() {
                     process::exit(3);
                 }
                 format = Some(&args[i]);
+            }
+            "--lib" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: --lib requires an argument");
+                    process::exit(3);
+                }
+                lib_paths.push(args[i].clone());
             }
             "--list-formats" => {
                 list_formats = true;
@@ -117,11 +127,37 @@ fn main() {
         }
     };
 
+    if !lib_paths.is_empty() && !cfg!(feature = "omf") {
+        eprintln!(
+            "Error: --lib needs a build with OMF support (cargo build --features omf); \
+             the ordinal names are read from OMF import libraries."
+        );
+        process::exit(3);
+    }
+
     let basename = file.rsplit('/').next().unwrap_or(file);
 
+    // `--lib` only feeds the detailed and JSON reports: winedump output must
+    // stay byte-for-byte identical to Wine's, so it never carries annotations.
+    #[cfg(feature = "omf")]
+    let resolution = if lib_paths.is_empty() || format == "winedump" {
+        None
+    } else {
+        Some(build_resolution(&ne, &lib_paths))
+    };
+    #[cfg(not(feature = "omf"))]
+    let resolution: Option<Resolution> = None;
+    #[cfg(feature = "omf")]
+    if format == "winedump" && !lib_paths.is_empty() {
+        eprintln!(
+            "note: --lib is not applied to --format winedump — that output stays \
+             byte-for-byte identical to Wine's winedump."
+        );
+    }
+
     match format {
-        "json" => print_json(basename, &ne, &header),
-        "detailed" => print_detailed(basename, &ne, &header),
+        "json" => print_json(basename, &ne, &header, resolution.as_ref()),
+        "detailed" => print_detailed(basename, &ne, &header, resolution.as_ref()),
         "winedump" => print_winedump(&ne, &header),
         _ => unreachable!(),
     }
@@ -130,6 +166,85 @@ fn main() {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Ordinal-name resolution for one NE file, merged from the `--lib` OMF
+/// import libraries.
+///
+/// Field types here are plain containers on purpose: only
+/// [`build_resolution`] touches `ne::omf`, so the printers stay
+/// feature-independent.
+struct Resolution {
+    /// Libraries that loaded, as given on the command line.
+    libs: Vec<String>,
+    /// Relocation index (position in `RelocationTable::entries`) → names.
+    names_by_site: HashMap<usize, Vec<String>>,
+    /// Module name as spelled in the NE file → `(ordinal, names, sites)`,
+    /// ordinal-ordered. Empty `names` means the libraries do not cover it.
+    by_module: BTreeMap<String, Vec<(u16, Vec<String>, usize)>>,
+    resolved_sites: usize,
+    unresolved_sites: usize,
+}
+
+#[cfg(feature = "omf")]
+fn build_resolution(ne: &VecNE, lib_paths: &[String]) -> Resolution {
+    let mut index = ne::omf::OrdinalIndex::new();
+    for path in lib_paths {
+        let data = match std::fs::read(path) {
+            Ok(data) => data,
+            Err(e) => {
+                eprintln!("Error loading '{}': {}", path, e);
+                process::exit(2);
+            }
+        };
+        let library = match ne::omf::Library::parse(&data) {
+            Ok(library) => library,
+            Err(e) => {
+                eprintln!("Error: '{}': {}", path, e);
+                process::exit(1);
+            }
+        };
+        for warning in &library.warnings {
+            eprintln!("warning: {}: {}", path, warning);
+        }
+        index.add_library(&library);
+    }
+
+    let report = match ne::omf::resolve_ne_imports(ne, &index) {
+        Ok(report) => report,
+        Err(e) => {
+            eprintln!("warning: imports not resolved: {}", e);
+            ne::omf::ImportReport::default()
+        }
+    };
+
+    let mut names_by_site = HashMap::new();
+    for site in &report.sites {
+        if !site.names.is_empty() {
+            names_by_site.insert(site.reloc_index, site.names.clone());
+        }
+    }
+    let by_module = report
+        .by_module
+        .iter()
+        .map(|(module, imports)| {
+            (
+                module.clone(),
+                imports
+                    .iter()
+                    .map(|i| (i.ordinal, i.names.clone(), i.site_count))
+                    .collect(),
+            )
+        })
+        .collect();
+
+    Resolution {
+        libs: lib_paths.to_vec(),
+        names_by_site,
+        by_module,
+        resolved_sites: report.resolved_sites(),
+        unresolved_sites: report.unresolved_sites(),
+    }
+}
 
 fn fmt_flags(flags: u16, table: &[(&str, u16)]) -> String {
     table
@@ -141,7 +256,7 @@ fn fmt_flags(flags: u16, table: &[(&str, u16)]) -> String {
 }
 
 // Map a module ref index to its name (cached)
-fn build_module_cache(ne: &VecNE) -> Result<HashMap<usize, String>, new_executable::Error> {
+fn build_module_cache(ne: &VecNE) -> Result<HashMap<usize, String>, ne::Error> {
     let mrt = ModuleRefTable::parse(ne)?;
     let mut cache = HashMap::new();
     for i in 0..mrt.offsets.len() {
@@ -158,7 +273,12 @@ fn build_module_cache(ne: &VecNE) -> Result<HashMap<usize, String>, new_executab
 // Mode: detailed (unified human-readable output)
 // ---------------------------------------------------------------------------
 
-fn print_detailed(basename: &str, ne: &VecNE, header: &ImageOS2Header) {
+fn print_detailed(
+    basename: &str,
+    ne: &VecNE,
+    header: &ImageOS2Header,
+    resolution: Option<&Resolution>,
+) {
     print_section(basename, "HEADER");
     print_header_section(ne, header);
     println!();
@@ -169,13 +289,13 @@ fn print_detailed(basename: &str, ne: &VecNE, header: &ImageOS2Header) {
     print_exports_section(ne);
     println!();
     print_section(basename, "IMPORTS");
-    print_imports_section(ne);
+    print_imports_section(ne, resolution);
     println!();
     print_section(basename, "RESOURCES");
     print_resources_section(ne);
     println!();
     print_section(basename, "RELOCATIONS");
-    print_relocations_section(ne);
+    print_relocations_section(ne, resolution);
     println!();
     print_section(basename, "TABLES");
     print_tables_section(ne);
@@ -552,7 +672,12 @@ fn json_escape(s: &str) -> String {
         .replace('\t', "\\t")
 }
 
-fn print_json(basename: &str, ne: &VecNE, header: &ImageOS2Header) {
+fn print_json(
+    basename: &str,
+    ne: &VecNE,
+    header: &ImageOS2Header,
+    resolution: Option<&Resolution>,
+) {
     let fields = header.common_fields();
     let exe_type = header.exe_type();
     let is_dll = ne.is_library();
@@ -691,6 +816,8 @@ fn print_json(basename: &str, ne: &VecNE, header: &ImageOS2Header) {
         entries: Vec::new(),
     });
     let export_count = entry_table.export_count();
+    let unused_count = entry_table.unused_count();
+    let total_slot_count = entry_table.total_slot_count();
     let module_cache = build_module_cache(ne).unwrap_or_default();
     let resource_table = ResourceTable::parse(ne).unwrap_or(ResourceTable {
         type_info: Vec::new(),
@@ -704,15 +831,69 @@ fn print_json(basename: &str, ne: &VecNE, header: &ImageOS2Header) {
     "segment_count": {},
     "module_count": {},
     "export_count": {},
+    "unused_export_count": {},
+    "total_export_slot_count": {},
     "resource_type_count": {},
     "is_dll": {}
   }},"#,
         segments.len(),
         module_cache.len(),
         export_count,
+        unused_count,
+        total_slot_count,
         resource_types,
         is_dll
     ));
+
+    // Ordinal-name resolution — only present when --lib was given.
+    if let Some(resolution) = resolution {
+        let by_module: Vec<String> = resolution
+            .by_module
+            .iter()
+            .map(|(module, imports)| {
+                let entries: Vec<String> = imports
+                    .iter()
+                    .map(|(ordinal, names, sites)| {
+                        format!(
+                            "        {{\"ordinal\": {}, \"names\": [{}], \"fixup_sites\": {}}}",
+                            ordinal,
+                            names
+                                .iter()
+                                .map(|n| format!("\"{}\"", json_escape(n)))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            sites
+                        )
+                    })
+                    .collect();
+                format!(
+                    "      {{\"module\": \"{}\", \"imports\": [\n{}\n      ]}}",
+                    json_escape(module),
+                    entries.join(",\n")
+                )
+            })
+            .collect();
+        out.push_str(&format!(
+            r#"
+  "import_resolution": {{
+    "libraries": [{}],
+    "resolved_sites": {},
+    "unresolved_sites": {},
+    "by_module": [
+{}
+    ]
+  }},"#,
+            resolution
+                .libs
+                .iter()
+                .map(|l| format!("\"{}\"", json_escape(l)))
+                .collect::<Vec<_>>()
+                .join(", "),
+            resolution.resolved_sites,
+            resolution.unresolved_sites,
+            by_module.join(",\n")
+        ));
+    }
 
     // Segments
     out.push_str("\n  \"segments\": [\n");
@@ -866,7 +1047,17 @@ fn print_exports_section(ne: &VecNE) {
     }
 
     let total = entry_table.export_count();
-    println!("  {} export(s):\n", total);
+    let unused = entry_table.unused_count();
+    if unused > 0 {
+        println!(
+            "  {} export(s) + {} unused ordinal(s) ({} total):\n",
+            total,
+            unused,
+            entry_table.total_slot_count()
+        );
+    } else {
+        println!("  {} export(s):\n", total);
+    }
 
     let resident_names = match ResidentNameTable::parse(ne) {
         Ok(rnt) => rnt,
@@ -908,7 +1099,7 @@ fn print_exports_section(ne: &VecNE) {
     }
 }
 
-fn print_imports_section(ne: &VecNE) {
+fn print_imports_section(ne: &VecNE, resolution: Option<&Resolution>) {
     let module_cache = match build_module_cache(ne) {
         Ok(c) => c,
         Err(_) => {
@@ -954,6 +1145,44 @@ fn print_imports_section(ne: &VecNE) {
             .unwrap_or(0);
         // Module reference indices are 1-based in NE files.
         println!("  {:<20}  {:>10}  {:>6}", mod_name, *idx + 1, count);
+    }
+
+    let Some(resolution) = resolution else {
+        return;
+    };
+
+    println!();
+    println!(
+        "  Ordinal names from: {} ({} of {} ordinal import site(s) named)",
+        resolution.libs.join(", "),
+        resolution.resolved_sites,
+        resolution.resolved_sites + resolution.unresolved_sites
+    );
+    for (module, imports) in &resolution.by_module {
+        let named = imports
+            .iter()
+            .filter(|(_, names, _)| !names.is_empty())
+            .count();
+        println!(
+            "\n  {} — {} distinct import(s), {} named:",
+            module,
+            imports.len(),
+            named
+        );
+        println!("    {:>7}  Name", "Ordinal");
+        for (ordinal, names, sites) in imports {
+            let label = if names.is_empty() {
+                "(not in the loaded libraries)".to_string()
+            } else {
+                names.join(" | ")
+            };
+            let sites_note = if *sites > 1 {
+                format!("  [{} fixup sites]", sites)
+            } else {
+                String::new()
+            };
+            println!("    {:>7}  {}{}", ordinal, label, sites_note);
+        }
     }
 }
 
@@ -1044,7 +1273,7 @@ fn print_resources_section(ne: &VecNE) {
     }
 }
 
-fn print_relocations_section(ne: &VecNE) {
+fn print_relocations_section(ne: &VecNE, resolution: Option<&Resolution>) {
     let reloc_table = match RelocationTable::parse(ne) {
         Ok(rt) => rt,
         Err(e) => {
@@ -1101,7 +1330,13 @@ fn print_relocations_section(ne: &VecNE) {
                     .unwrap_or_else(|| format!("??(0x{:04X})", entry.target2));
                 format!("mod={} proc={}", mod_name, proc_name)
             } else {
-                format!("mod={} ord=0x{:04X}", mod_name, entry.target2)
+                // The ordinal itself is all the NE file carries; the name comes
+                // from the OMF import libraries given with --lib.
+                let name_note = resolution
+                    .and_then(|r| r.names_by_site.get(&i))
+                    .map(|names| format!(" name={}", names.join(" | ")))
+                    .unwrap_or_default();
+                format!("mod={} ord=0x{:04X}{}", mod_name, entry.target2, name_note)
             }
         } else {
             format!("t1=0x{:04X} t2=0x{:04X}", entry.target1, entry.target2)
@@ -1141,7 +1376,7 @@ fn print_tables_section(ne: &VecNE) {
                 }
             }
         }
-        Err(new_executable::Error::TableNotPresent(_)) => println!("  Resident Names: (not present)"),
+        Err(ne::Error::TableNotPresent(_)) => println!("  Resident Names: (not present)"),
         Err(e) => println!("  Resident Names Error: {}", e),
     }
 
@@ -1164,7 +1399,7 @@ fn print_tables_section(ne: &VecNE) {
                 }
             }
         }
-        Err(new_executable::Error::TableNotPresent(_)) => println!("  Module Refs: (not present)"),
+        Err(ne::Error::TableNotPresent(_)) => println!("  Module Refs: (not present)"),
         Err(e) => println!("  Module Refs Error: {}", e),
     }
 }
@@ -1184,6 +1419,10 @@ fn print_help() {
     println!("Options:");
     println!("  --format <FORMAT>   Output format (default: detailed)");
     println!("                      Available: detailed, json, winedump");
+    println!("  --lib <PATH>        OMF import library (.LIB) used to name the");
+    println!("                      imported ordinals; repeatable, e.g.");
+    println!("                      --lib LIBW.LIB --lib MMSYSTEM.LIB");
+    println!("                      Applies to --format detailed and json only.");
     println!("  --list-formats      Show available formats and exit");
     println!("  --version           Show version and exit");
     println!();
